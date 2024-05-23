@@ -1,6 +1,9 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
 
-
-def pixel_accuracy(output, mask):
+def pixel_accuracy(pred_mask, gt_mask):
     """
     Calculate the pixel-wise accuracy of classification predictions.
 
@@ -9,7 +12,7 @@ def pixel_accuracy(output, mask):
     to the ground truth classes provided in the mask.
 
     Args:
-        output (torch.Tensor): The raw output (logits) from the neural network.
+        pred_mask (torch.Tensor): The raw output (logits) from the neural network.
                                Shape should be (batch_size, num_classes, height, width).
         mask (torch.Tensor): The ground truth labels for each pixel.
                              Shape should be (batch_size, height, width) with integer values representing classes.
@@ -20,11 +23,11 @@ def pixel_accuracy(output, mask):
     with torch.no_grad():  # Ensure no gradients are calculated
         # Apply softmax to the output to convert to probability distributions
         # Then, use argmax to get the most likely class prediction for each pixel
-        predictions = torch.argmax(F.softmax(output, dim=1), dim=1)
+        predictions = torch.argmax(F.softmax(pred_mask, dim=1), dim=1)
 
         # Compare the predictions with the true labels (mask)
         # Create a binary tensor where 'True' indicates correct prediction
-        correct_predictions = (predictions == mask)
+        correct_predictions = (predictions == gt_mask)
 
         # Calculate accuracy
         # Sum up the correct predictions and divide by the total number of predictions
@@ -32,7 +35,7 @@ def pixel_accuracy(output, mask):
 
     return accuracy
 
-def m_iou(pred_mask, mask, smooth=1e-10, num_classes=22):
+def m_iou(pred_mask, gt_mask, smooth=1e-10, num_classes=2):
     """
     Calculate the mean Intersection over Union (mIoU) for predicted segmentation masks.
 
@@ -54,12 +57,12 @@ def m_iou(pred_mask, mask, smooth=1e-10, num_classes=22):
         pred_mask = F.softmax(pred_mask, dim=1)
         pred_mask = torch.argmax(pred_mask, dim=1)
         pred_mask = pred_mask.contiguous().view(-1)
-        mask = mask.contiguous().view(-1)
+        gt_mask = gt_mask.contiguous().view(-1)
 
         iou_per_class = []
         for clas in range(0, num_classes):  # Loop through each class
             true_class = pred_mask == clas
-            true_label = mask == clas
+            true_label = gt_mask == clas
 
             # Handle cases where the class is not present in the labels
             if true_label.long().sum().item() == 0:

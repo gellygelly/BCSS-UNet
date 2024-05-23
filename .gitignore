@@ -1,2 +1,5 @@
-model/
+model/*
 data/
+log/
+*.pth.tar
+*.pt

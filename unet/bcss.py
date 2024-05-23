@@ -3,9 +3,6 @@
 import os
 from PIL import Image
 import numpy as np
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
-import torch
 from torch.utils.data import Dataset
 
 class BCSSDataset(Dataset):

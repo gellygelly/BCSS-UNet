@@ -1,12 +1,19 @@
-
-# TODO 이거 config에서 받아오게 변경
-CECKPOINT_SAVE_PATH = '/kaggle/input/u-net-advance-bcss-segmentation-512/last_checkpoint.pth.tar'
-stop_epoch = 30
-
 import time
 from tqdm import tqdm
+import os
+import torch
+import torch.nn as nn
+import segmentation_models_pytorch as smp
+import numpy as np
+from unet.config import *
+from unet.load_data import create_dataset_instances, create_dataloader
+from utils import metric
+from utils.metric_visualize import show_loss_graph, show_acc_graph
+from utils.get_today import get_today
+import logging
 
-# TODO epoch 정보 파일명 추가
+DEVICE = torch.device('cuda:0')
+
 def save_checkpoint(state, filename="checkpoint.pth.tar"):
     """
     Save the current training state as a checkpoint.
@@ -15,6 +22,7 @@ def save_checkpoint(state, filename="checkpoint.pth.tar"):
         state (dict): State to be saved, including model and optimizer state, training history, etc.
         filename (str): Filename for saving the checkpoint.
     """
+    
     torch.save(state, filename)
 
 def get_lr(optimizer):
@@ -48,18 +56,36 @@ def fit(epochs, model, train_loader, val_loader, criterion1, criterion2, optimiz
     Returns:
         dict: A dictionary containing the training history (losses, accuracies, IoU scores, learning rates).
     """
+    today = get_today()
+    
+    # log setting
+    log = logging.getLogger()
+    log.setLevel(logging.INFO)
+
+    formatter = logging.Formatter('%(asctime)s -  %(levelname)s - %(message)s')
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    log.addHandler(stream_handler)
+
+    if not os.path.exists('log/train/'+today):
+        os.mkdir('log/train/'+today)
+
+    file_handler = logging.FileHandler("log/train/"+today+"/train.log", mode='w')
+    file_handler.setFormatter(formatter)
+    log.addHandler(file_handler)
+
     torch.cuda.empty_cache()
     # Initialize tracking variables for performance metrics
     train_losses, test_losses, val_iou, val_acc, train_iou, train_acc, lrs = [], [], [], [], [], [], []
     min_loss, max_iou = np.inf, 0
     decrease, not_improve = 1, 0
 
-    model.to(device)
+    model.to(DEVICE)
     fit_time = time.time()
     
     # Load checkpoint if it exists
-    if os.path.exists(CECKPOINT_SAVE_PATH):
-        checkpoint = torch.load(CECKPOINT_SAVE_PATH)
+    if os.path.exists(CHECKPOINT_SAVE_PATH):
+        checkpoint = torch.load(CHECKPOINT_SAVE_PATH)
         # Restore states from the checkpoint
         model.load_state_dict(checkpoint['model_state'])
         optimizer.load_state_dict(checkpoint['optimizer_state'])
@@ -76,14 +102,12 @@ def fit(epochs, model, train_loader, val_loader, criterion1, criterion2, optimiz
         )
         start_epoch = checkpoint['epoch']
         
-        print(f'Continue training from {start_epoch} epoch!')
+        log.info(f'Continue training from {start_epoch} epoch!')
     else:
         start_epoch = 0
     
-    for e in range(start_epoch, epochs):
-        if e == stop_epoch:
-            break
-        
+
+    for e in range(start_epoch, epochs):     
         since = time.time()
         running_loss, iou_score, accuracy = 0, 0, 0
 
@@ -92,7 +116,7 @@ def fit(epochs, model, train_loader, val_loader, criterion1, criterion2, optimiz
         train_loop = tqdm(train_loader, desc='Training', leave=True)
         for i, data in enumerate(train_loop):
             image, mask = data
-            image, mask = image.to(device), mask.to(device)
+            image, mask = image.to(DEVICE), mask.to(DEVICE)
 
             # Forward pass
             output = model(image)
@@ -104,8 +128,8 @@ def fit(epochs, model, train_loader, val_loader, criterion1, criterion2, optimiz
             optimizer.zero_grad()
 
             # Update metrics
-            iou_score += m_iou(output, mask)
-            accuracy += pixel_accuracy(output, mask)
+            iou_score += metric.m_iou(output, mask)
+            accuracy += metric.pixel_accuracy(output, mask)
             running_loss += loss.item()
 
             # Update tqdm loop with current metrics
@@ -124,15 +148,15 @@ def fit(epochs, model, train_loader, val_loader, criterion1, criterion2, optimiz
         with torch.no_grad():
             for i, data in enumerate(val_loop):
                 image, mask = data
-                image, mask = image.to(device), mask.to(device)
+                image, mask = image.to(DEVICE), mask.to(DEVICE)
 
                 # Forward pass and loss computation
                 output = model(image)
                 loss = criterion1(output, mask) + criterion2(output, mask)
 
                 # Update metrics
-                val_iou_score += m_iou(output, mask)
-                test_accuracy += pixel_accuracy(output, mask)
+                val_iou_score += metric.m_iou(output, mask)
+                test_accuracy += metric.pixel_accuracy(output, mask)
                 test_loss += loss.item()
 
                 # Update tqdm loop with current metrics
@@ -146,7 +170,7 @@ def fit(epochs, model, train_loader, val_loader, criterion1, criterion2, optimiz
 
         # Checkpointing and early stopping logic
         if min_loss > (test_loss/len(val_loader)):
-                print('Loss Decreasing.. {:.3f} >> {:.3f} '.format(min_loss, (test_loss/len(val_loader))))
+                log.info('Loss Decreasing.. {:.3f} >> {:.3f} '.format(min_loss, (test_loss/len(val_loader))))
                 min_loss = (test_loss/len(val_loader))
                 decrease += 1
                 torch.save(model, 'Unet-mIoU-best.pt'.format(val_iou_score/len(val_loader)))
@@ -155,30 +179,30 @@ def fit(epochs, model, train_loader, val_loader, criterion1, criterion2, optimiz
         if (test_loss/len(val_loader)) > min_loss:
             not_improve += 1
             min_loss = (test_loss/len(val_loader))
-            print(f'Loss Not Decrease for {not_improve} time')
+            log.info(f'Loss Not Decrease for {not_improve} time')
             if not_improve == 5:
-                print('Loss not decrease for 5 times, Stop Training')
+                log.info('Loss not decrease for 5 times, Stop Training')
                 break
         else:
             not_improve = 0
 
         # Update history after each epoch
         val_iou.append(val_iou_score / len(val_loader))
+        val_acc.append(test_accuracy / len(val_loader))
         train_iou.append(iou_score / len(train_loader))
         train_acc.append(accuracy / len(train_loader))
-        val_acc.append(test_accuracy / len(val_loader))
 
-        # TODO log file로 저장
         # Print epoch summary
-        print("Epoch:{}/{}..".format(e+1, epochs),
-                  "Train Loss: {:.3f}..".format(running_loss/len(train_loader)),
-                  "Val Loss: {:.3f}..".format(test_loss/len(val_loader)),
-                  "Train mIoU:{:.3f}..".format(iou_score/len(train_loader)),
-                  "Val mIoU: {:.3f}..".format(val_iou_score/len(val_loader)),
-                  "Train Acc:{:.3f}..".format(accuracy/len(train_loader)),
-                  "Val Acc:{:.3f}..".format(test_accuracy/len(val_loader)),
-                  "Time: {:.2f}m".format((time.time()-since)/60))
-
+        log.info("Epoch:{}/{}.. Train Loss: {:.3f}, Val Loss: {:.3f}, Train mIoU: {:.3f}, Val mIoU: {:.3f}, Train Acc: {:.3f}, Val Acc: {:.3f}, Time: {:.2f}m".format(
+            e + 1, epochs,
+            running_loss / len(train_loader),
+            test_loss / len(val_loader),
+            iou_score / len(train_loader),
+            val_iou_score / len(val_loader),
+            accuracy / len(train_loader),
+            test_accuracy / len(val_loader),
+            (time.time() - since) / 60))
+        
         # Save checkpoint
         state = {
             'epoch': e + 1,
@@ -197,7 +221,7 @@ def fit(epochs, model, train_loader, val_loader, criterion1, criterion2, optimiz
             'min_loss': min_loss,
             'max_iou': max_iou
         }
-        save_checkpoint(state, filename='last_checkpoint.pth.tar')
+        save_checkpoint(state, filename='model/last_checkpoint.pth.tar')
 
     # Compile history of training
     history = {
@@ -206,30 +230,28 @@ def fit(epochs, model, train_loader, val_loader, criterion1, criterion2, optimiz
         'train_acc': train_acc, 'val_acc': val_acc,
         'lrs': lrs
     }
-    print('Total time: {:.2f} m'.format((time.time() - fit_time) / 60))
+    log.info('Total time: {:.2f} m'.format((time.time() - fit_time) / 60))
+
     return history
 
 
 def train():
-    
-    ## Step 7: Train the model
+    # 1. Load data
+    train_dataset = create_dataset_instances(mode='train')
+    train_loader = create_dataloader(train_dataset)
 
-    # TODO set 부분 전부 다 config에서 불러오도록 변경
-    # # Set the maximum learning rate for the optimizer
-    # max_lr = 1e-3
+    val_dataset = create_dataset_instances(mode='val')
+    val_loader = create_dataloader(val_dataset)
 
-    # # Define the number of epochs for training the model
-    # num_epochs = 100
-
-    # # Set the weight decay for regularization in the optimizer
-    # weight_decay = 1e-4
+    # 2. Define model
+    model = smp.Unet(in_channels = 3, classes = 2) # background(0), tumor(1)
 
     # Define the primary loss function with label smoothing to improve generalization
     # Label smoothing helps to make the model less confident on the training data
-    criterion1 = nn.CrossEntropyLoss(label_smoothing=0.1).to(device)
+    criterion1 = nn.CrossEntropyLoss(label_smoothing=0.1).to(DEVICE)
 
     # Define the secondary loss function, Dice Loss, useful for handling class imbalance in segmentation tasks
-    criterion2 = DiceLoss().to(device)
+    criterion2 = metric.DiceLoss().to(DEVICE)
 
     # Initialize the optimizer with weight decay for regularization
     # AdamW is an optimizer with an adaptive learning rate and weight decay fix
@@ -241,17 +263,14 @@ def train():
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr, epochs=num_epochs,
                                                     steps_per_epoch=len(train_loader))
 
-    # Train the model using the defined configurations
+    # 3. Train
     # The 'fit' function trains the model over the specified number of epochs
     # and returns a history of training metrics like loss and accuracy
     history = fit(num_epochs, model, train_loader, val_loader, criterion1, criterion2, optimizer, scheduler)
 
-
-    # TODO visualize
-    
-    # TODO train/val 그래프 이미지 log 폴더에 저장
-
-    return history
+    # 4. Visualize_graph
+    show_loss_graph(history)
+    show_acc_graph(history)
 
 
 if __name__ == '__main__':
