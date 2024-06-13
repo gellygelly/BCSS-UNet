@@ -9,6 +9,7 @@ from utils.pred_result_visualize import show_worst_best_pred_result
 from utils.get_today import get_today
 import logging
 
+
 DEVICE = torch.device('cuda:0')
 
 def predict(test_loader):
@@ -60,42 +61,36 @@ def predict(test_loader):
             y_pred_mask.append(mask_pred.detach().cpu())
 
             iou = metric.m_iou(output, mask, num_classes=2)
-            iou_scores.append(iou)
+            iou_scores.append((iou, i))
             test_iou += iou
 
             acc = metric.pixel_accuracy(output, mask)
-            acc_scores.append(acc)
+            acc_scores.append((acc, i))
             test_acc += acc
 
-            dice = metric.DiceLoss()
-            dice = dice.forward(output, mask)
-            dice_scores.append(dice)
+            diceloss = metric.DiceLoss()
+            dice = 1 - float(diceloss.forward(output, mask))
+            dice_scores.append((dice, i))
             test_dice += dice
 
-    
     test_iou /= len(test_loader)
     test_acc /= len(test_loader)
-    test_dice = 1 - (test_dice/len(test_loader))
-    
+    test_dice /= len(test_loader)
+ 
     log.info('Test IoU: {:.3f}, Test Acc: {:.3f}, Test Dice: {:.3f}'.format(test_iou, test_acc, test_dice))
+
     y_pred_mask = torch.cat(y_pred_mask)
 
-    # make metrics dict 
-    iou_indexed_list = [(value, index) for index, value in enumerate(iou_scores)]
-    iou_indexed_list.sort() 
+    # new! make metrics dict
+    iou_scores.sort()
+    acc_scores.sort() 
+    dice_scores.sort()
 
-    acc_indexed_list = [(value, index) for index, value in enumerate(acc_scores)]
-    acc_indexed_list.sort()
+    metrics_dict['iou'] = iou_scores
+    metrics_dict['acc'] = acc_scores
+    metrics_dict['dice'] = dice_scores
 
-    dice_indexed_list = [(value, index) for index, value in enumerate(dice_scores)]
-    dice_indexed_list.sort()
-
-    metrics_dict['iou'] = iou_indexed_list
-    metrics_dict['acc'] = acc_indexed_list
-    metrics_dict['dice'] = dice_indexed_list
-    
     return y_pred_mask, metrics_dict
-
 
 def test():
     # 1. Load data
